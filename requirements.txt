@@ -1,0 +1,4 @@
+dnstwist
+python-whois
+python-Levenshtein
+tabulate
