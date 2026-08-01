@@ -24,6 +24,8 @@ Requires the `dnstwist` CLI to be on PATH (installed automatically via pip).
 """
 import argparse
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
 import subprocess
 import sys
 import time
@@ -95,6 +97,7 @@ def generate_candidates(domain: str) -> list[dict]:
         return []
 
 
+@lru_cache(maxsize=2048)
 def get_whois_info(domain: str) -> dict:
     try:
         w = whois.whois(domain)
@@ -147,17 +150,13 @@ def scan_domain(domain: str, min_score: int) -> list[dict]:
 
     print("[*] Checking WHOIS and scoring candidates...", flush=True)
 
+    work_items = [c for c in candidates if c.get("domain") and c.get("domain") != domain]
     rows = []
-    total_candidates = len(candidates)
-    for index, c in enumerate(candidates, start=1):
-        candidate_domain = c.get("domain")
-        if not candidate_domain or candidate_domain == domain:
-            continue
 
-        print(
-            f"    -> [{index}/{total_candidates}] Checking {candidate_domain} ({c.get('fuzzer', 'unknown')})",
-            flush=True,
-        )
+    def build_row(candidate: dict) -> dict | None:
+        candidate_domain = candidate.get("domain")
+        if not candidate_domain:
+            return None
 
         whois_info = get_whois_info(candidate_domain)
         recently_registered = is_recently_registered(whois_info["creation_date"])
@@ -166,25 +165,48 @@ def scan_domain(domain: str, min_score: int) -> list[dict]:
         score = score_candidate(
             registered_recently=recently_registered,
             edit_distance=edit_distance,
-            fuzzer=c.get("fuzzer", ""),
+            fuzzer=candidate.get("fuzzer", ""),
         )
 
         if score < min_score:
-            print(f"       skipped: score {score} below threshold {min_score}", flush=True)
-            continue
+            return None
 
-        print(f"       matched: score {score}", flush=True)
-
-        rows.append({
+        return {
             "original_domain": domain,
             "fake_domain": candidate_domain,
             "risk_score": score,
-            "fuzzer": c.get("fuzzer"),
-            "dns_a": c.get("dns_a"),
+            "fuzzer": candidate.get("fuzzer"),
+            "dns_a": candidate.get("dns_a"),
             "registrar": whois_info["registrar"],
             "registered": str(whois_info["creation_date"]) if whois_info["creation_date"] else "unknown",
             "recently_registered": recently_registered,
-        })
+        }
+
+    total_candidates = len(work_items)
+    if not work_items:
+        return rows
+
+    max_workers = min(8, total_candidates)
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        future_to_candidate = {
+            pool.submit(build_row, candidate): candidate
+            for candidate in work_items
+        }
+
+        for index, future in enumerate(as_completed(future_to_candidate), start=1):
+            candidate = future_to_candidate[future]
+            candidate_domain = candidate.get("domain", "unknown")
+            print(
+                f"    -> [{index}/{total_candidates}] Checking {candidate_domain} ({candidate.get('fuzzer', 'unknown')})",
+                flush=True,
+            )
+
+            row = future.result()
+            if row is None:
+                continue
+
+            print(f"       matched: score {row['risk_score']}", flush=True)
+            rows.append(row)
 
     rows.sort(key=lambda r: r["risk_score"], reverse=True)
     return rows
