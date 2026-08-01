@@ -24,7 +24,6 @@ import domain_watch
 app = FastAPI(title="Domain Watch API")
 executor = ThreadPoolExecutor(max_workers=4)
 
-
 class ScanRequest(BaseModel):
     domains: List[str]
     min_score: int = 0

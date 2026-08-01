@@ -49,7 +49,13 @@ except ImportError:
 def generate_candidates(domain: str) -> list[dict]:
     """Run dnstwist CLI and return only candidates that actually resolve."""
     try:
-        command = ["dnstwist", "--registered", "--format", "json", domain]
+        command = ["dnstwist", 
+                   "--registered", 
+                   "--format", 
+                   "json", 
+                   "--threads", "30",
+                   "--nameservers","1.1.1.1,8.8.8.8",
+                   domain];
         print("[*] Generating candidate domains with dnstwist...", flush=True)
         process = subprocess.Popen(
             command,
